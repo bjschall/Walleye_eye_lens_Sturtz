@@ -1,0 +1,11 @@
+#############################################################
+############# Three dimensional plot C, N, S ################
+#############################################################
+library(plotly)
+whole <- read.csv("Whole eye.csv")
+fig3d <- plot_ly(whole, x=~Carbon, y=~Nitrogen, z=~Sulfur,  type="scatter3d", mode="markers",
+                 color = ~Location, colors=c("black", "orange2", "blue"), alpha=0.4,
+                 marker = list(symbol = "circle-dot", line = list(colors = c("black", "orange2", "blue"),width = 1))); fig3d
+fig <- fig3d %>% layout(scene = list(xaxis = list(title = "δ<sup>13</sup>C"),
+                                   yaxis = list(title = "δ<sup>15</sup>N"),
+                                   zaxis = list(title = "δ<sup>34</sup>S"))); fig
