@@ -1,0 +1,40 @@
+####################################################
+####### Individual lens layer chronologies #########
+####################################################
+#plot
+
+p1<-CNLayer1 %>% group_by(FishID) %>% 
+  mutate(Fish_num = cur_group_id()) %>% #filter(Cohort>2004&Cohort<2019)%>% 
+  ggplot()+ #Carbon  
+  geom_line(aes(x=Diameter, y=`d13C`, group=FishID, col=Location), alpha=0.6)+ 
+  geom_point(aes(x=Diameter, y=`d13C`,col=Location), size=0.7, alpha=0.6)+
+  theme_classic()+
+  scale_x_continuous(labels = NULL, limits=c(900,3000))+
+  scale_colour_manual(values = c("black", "orange2", "blue"), name=NULL, labels=c("Pond", "Lake", "RAS"))+
+  xlab(NULL)+
+  ylab({delta}^13*C~'(\u2030)')+
+  scale_y_continuous(limits = c(-27,-18), breaks=seq(-26,-18,2))+
+  theme(axis.title = element_text(size=18),
+        axis.text = element_text(size=14), 
+        legend.text = element_text(size=12), 
+        axis.ticks.length=unit(.25, "cm"), 
+        legend.position = "top"); p1
+
+p2<-CNLayer1 %>% group_by(FishID) %>% 
+  mutate(Fish_num = cur_group_id()) %>% #filter(Cohort>2004&Cohort<2019)%>% 
+  ggplot()+ #Carbon  
+  geom_line(aes(x=Diameter, y=`d15N`, group=FishID, col=Location), alpha=0.6)+ 
+  geom_point(aes(x=Diameter, y=`d15N`,col=Location), size=0.7, alpha=0.6)+
+  theme_classic()+
+  scale_x_continuous(labels = function(x) format(x, big.mark = ",",scientific = FALSE), limits=c(900,3000))+
+  scale_colour_manual(values = c("black", "orange2", "blue"))+
+  xlab("Lens diameter (\u03bcm)")+
+  ylab({delta}^15*N~'(\u2030)')+
+  guides(col="none")+
+  scale_y_continuous(limits = c(4,26), breaks=seq(2,26,2))+
+  theme(axis.title = element_text(size=18),
+        axis.text = element_text(size=14), 
+        axis.ticks.length=unit(.25, "cm")); p2
+
+GAM_plot_stack<-cowplot::align_plots(p1, p2, align="v", axis="l")
+cowplot::plot_grid(GAM_plot_stack[[1]], GAM_plot_stack[[2]], ncol = 1, rel_heights = c(0.505,0.495))
