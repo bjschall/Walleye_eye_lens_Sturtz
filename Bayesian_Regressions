@@ -1,0 +1,293 @@
+# load the siber package of functions
+library(SIBER)
+library(scales)
+library(tidyverse)
+library(brms)
+library(tidybayes)
+library(readxl)
+opar <- par() 
+################
+###Fish stats
+lgfl<-read_excel("LgFgl Walleye Eye Lens Measurements.xlsx")
+head(lgfl)
+
+lgfl %>% group_by(Location) %>% summarize(Mean=mean(`Length (mm)`), min=min(`Length (mm)`), max=max(`Length (mm)`))
+################
+###Group 1 = Blue Dog, Group 2 = Clear Lake, Group 3 = RAS
+#Load Whole lens data
+CN <- read.csv("CN ellipses.csv", header = T) #Iso1 Carbon Iso2 Nitrogen
+CS <- read.csv("CS ellipses.csv", header = T) # Iso1 Carbon Iso2 is Sulfur
+
+#Load layer data
+CNLayer1 <- read.csv("Layers.csv", header = T) #Iso1 Carbon Iso2 Nitrogen
+CNLayer <- CNLayer1[7:10]
+CNLayer1a<-CNLayer1 %>% mutate(Diameter_std = (Diameter - mean(Diameter))/sd(Diameter))
+
+#Load core data
+CNCore1 <- read.csv("Cores.csv", header = T) # Iso1 Nitrogen Iso2 is Sulfur
+CNCore <- CNCore1[5:8]
+
+#summary of whole lens mean values
+CN %>% group_by(group) %>% summarize(mean(iso1), SE=sd(iso1)/sqrt(length(iso1))) %>% as.data.frame() #carbon
+CN %>% group_by(group) %>% summarize(mean(iso2), SE=sd(iso2)/sqrt(length(iso2))) %>% as.data.frame()#nitrogen
+CS %>% group_by(group) %>% summarize(mean(iso2), SE=sd(iso2)/sqrt(length(iso2))) %>% as.data.frame()#sulfur
+
+#########################################################################
+#################  regression - C & N vs lens diameter  #################
+#########################################################################
+######### Carbon #########
+get_prior(d13C ~ Diameter_std * Location + (1|FishID), 
+          data = CNLayer1a,
+          family = gaussian())
+
+carb <- brm(d13C ~ Diameter_std * Location + (1|FishID), 
+            data = CNLayer1a,
+            prior = c(prior(normal(-25, 10), class="Intercept"), 
+                      prior(normal(0, 10), class = "b"),
+                      prior(exponential(1), class = "sigma"), 
+                      prior(exponential(1), class = "sd")),
+            family = gaussian(),
+            file="CLayer_LM.rds",
+            cores = 4, chains = 4, iter = 2000)
+
+carb$prior
+print(summary(carb), digits=4)
+plot(carb)
+pp.c <- pp_check(carb, type = "boxplot", ndraws = 20); pp.c
+plot(conditional_effects(carb), points=T)
+
+##Identify slopes and intercepts w/ 95% CrI for CL and RAS
+posts<-as_tibble(as_draws_df(carb))
+
+posts %>% 
+  transmute(gamma_CL = b_Diameter_std + `b_Diameter_std:LocationCL`,
+            gamma_BD = b_Diameter_std, 
+            gamma_RAS = b_Diameter_std + `b_Diameter_std:LocationRAS`) %>%
+  gather(key, value) %>%
+  group_by(key) %>%
+  summarise(mean = mean(value), sd(value))
+
+#What probability these slopes are greater than zero?
+prop <- posts %>%
+  mutate(gamma_BD = b_Diameter_std, 
+         gamma_CL = b_Diameter_std + `b_Diameter_std:LocationCL`,
+         gamma_RAS = b_Diameter_std + `b_Diameter_std:LocationRAS`, 
+         int_BD = b_Intercept, 
+         int_CL = b_Intercept + b_LocationCL, 
+         int_RAS = b_Intercept + b_LocationRAS)
+
+prop %>% summarize(propBD = sum(gamma_BD>0)/length(gamma_BD), 
+                   propCL = sum(gamma_CL>0)/length(gamma_CL), 
+                   propRAS = sum(gamma_RAS>0)/length(gamma_RAS)) %>% as.data.frame()
+
+#Mean and 95% CrI slope estimates for each relationship
+prop %>% mean_qi(gamma_BD)
+prop %>% mean_qi(gamma_CL)
+prop %>% mean_qi(gamma_RAS)
+
+#Mean and 95% CrI intercept estimates for each relationship
+prop %>% mean_qi(int_BD) %>% as.data.frame()
+prop %>% mean_qi(int_CL) %>% as.data.frame()
+prop %>% mean_qi(int_RAS) %>% as.data.frame()
+
+### Sample from posterior ###
+#Create new data frame for sampling
+CNLayer1a %>% group_by(Location) %>% summarize(min(Diameter), max(Diameter)) %>% as.data.frame()
+  
+
+newdat<-tibble(Location=c(rep("BD", 100), rep("CL", 100), rep("RAS", 100)),
+               Diameter_std=c(seq(min(filter(CNLayer1a, Location=="BD")$Diameter_std),
+                                  max(filter(CNLayer1a, Location=="BD")$Diameter_std), 
+                                  length.out=100),
+                              seq(min(filter(CNLayer1a, Location=="CL")$Diameter_std),
+                                  max(filter(CNLayer1a, Location=="CL")$Diameter_std), 
+                                  length.out=100),
+                              seq(min(filter(CNLayer1a, Location=="RAS")$Diameter_std),
+                                  max(filter(CNLayer1a, Location=="RAS")$Diameter_std), 
+                                  length.out=100)),
+               FishID="new")
+
+                     
+
+#draw from posterior
+post <- add_epred_draws(carb,newdata= newdat, allow_new_data=T, re_formula = NA)
+#summarize by mean and credible intervals
+summ<-post %>% 
+  mutate(Location = case_when(Location=="BD"~"Pond", 
+                              Location=="CL"~"Lake", 
+                              Location=="RAS"~"RAS")) %>% 
+  group_by(Location, Diameter_std) %>% 
+  mean_qi(.epred);summ
+
+#Estimated differences from min to max eye lens diameter
+diffs_C <- post %>% 
+  group_by(Location) %>% 
+  filter(Diameter_std==max(Diameter_std)|Diameter_std==min(Diameter_std)) %>% 
+  ungroup() %>% 
+  select(.draw, Location, Diameter_std, .epred) %>% 
+  pivot_wider(names_from = c(Location, Diameter_std), values_from=.epred) %>% 
+  mutate(BD_diff=`BD_1.17061831151115`-`BD_-1.59521138582875`,
+         Clear_diff=`CL_2.48518682931797`-`CL_-1.2571305702602`,
+         RAS_diff=`RAS_2.24075529078677`-`RAS_-1.32478496953529`)
+
+mean_qi(diffs_C[8:10])
+
+#final plot
+Carb_LM <- CNLayer1a %>% 
+  mutate(Location = case_when(Location=="BD"~"Pond", 
+                              Location=="CL"~"Lake", 
+                              Location=="RAS"~"RAS")) %>% 
+  ggplot(aes(x=Diameter_std, y=d13C))+
+  geom_point(aes(group=Location, col=Location, fill=Location), alpha=0.4, size=1)+
+  geom_line(data=summ, aes(x=Diameter_std, y=.epred, group=Location, linetype=Location, color=Location), linewidth=0.5)+
+  geom_ribbon(data=summ, aes(x=Diameter_std, y=.epred, ymin=.lower,ymax=.upper, group=Location, linetype=Location, fill=Location), alpha=0.2)+
+  theme_classic()+
+  ylab(expression(paste(delta^{13}, "C"," (\u2030)")))+
+  xlab(NULL)+
+  scale_x_continuous(limits=c(-1.7,2.75),
+                     breaks=c((1000-mean(CNLayer1a$Diameter))/sd(CNLayer1a$Diameter),
+                              (1500-mean(CNLayer1a$Diameter))/sd(CNLayer1a$Diameter),
+                              (2000-mean(CNLayer1a$Diameter))/sd(CNLayer1a$Diameter),
+                              (2500-mean(CNLayer1a$Diameter))/sd(CNLayer1a$Diameter),
+                              (3000-mean(CNLayer1a$Diameter))/sd(CNLayer1a$Diameter)), 
+                     labels=c(1000, 1500, 2000, 2500, 3000))+
+  scale_y_continuous(limits=c(-27,-18), breaks=seq(-26,-18,2))+
+  scale_color_manual(values=c("orange2", "black", "blue"), name=NULL, labels=c("Lake", "Pond", "RAS"))+
+  scale_fill_manual(values=c("orange2", "black", "blue"), name=NULL,labels=c("Lake", "Pond", "RAS"))+
+  scale_linetype_manual(values=c(1,2,4), name=NULL, labels=c("Lake", "Pond", "RAS"))+
+  theme(axis.text = element_text(size=8), 
+        axis.title = element_text(size=10),
+        strip.background = element_blank(),
+        strip.text = element_text(size=8), 
+        legend.position = "top"); Carb_LM
+
+######### Nitrogen #########
+nit <- brm(d15N ~ Diameter_std * Location + (1|FishID), 
+           data = CNLayer1a,
+           prior = c(prior(normal(15, 10), class="Intercept"), 
+                     prior(normal(0, 10), class = "b"),
+                     prior(exponential(1), class = "sigma"),
+                     prior(exponential(1), class = "sd")),
+           family = gaussian(),
+           #file_refit = "on_change",
+           file="NLayer_LM.rds",
+           cores = 4, chains = 4, iter = 2000)
+
+nit$prior
+print(summary(nit), digits=4)
+pp.n <- pp_check(nit, type = "boxplot",ndraws=20); pp.n
+plot(conditional_effects(nit), points=T)
+
+##Combine pp_checks into one figure for supplememnt
+
+pp_plots<-cowplot::plot_grid(NULL, pp.c, NULL, pp.n, ncol=2, labels = c("", "A","",  "B"),
+                             rel_heights = c(0.53, 0.47), rel_widths = c(0.05,0.95)); pp_plots
+
+pp_plot_final <- cowplot::ggdraw(pp_plots)+
+  cowplot::draw_label("Isotope value", fontface = "bold", x = 0, y = 0.5, vjust = 1.5, angle = 90, size = 14); pp_plot_final
+
+#ggsave("FigureS2. PPChecks.jpeg",plot=pp_plot_final, width=100, height=120,units = "mm",dpi = 800)
+
+##Identify slopes and intercepts w/ 95% Cri for CL and RAS
+posts_nit<-as_tibble(as_draws_df(nit))
+
+posts_nit %>% 
+  transmute(gamma_CL = b_Diameter_std + `b_Diameter_std:LocationCL`,
+            gamma_BD = b_Diameter_std, 
+            gamma_RAS = b_Diameter_std + `b_Diameter_std:LocationRAS`) %>%
+  gather(key, value) %>%
+  group_by(key) %>%
+  summarise(mean = mean(value))
+
+#What probability these slopes are greater than zero?
+prop_nit <- posts_nit %>%
+  mutate(gamma_BD = b_Diameter_std, 
+         gamma_CL = b_Diameter_std + `b_Diameter_std:LocationCL`,
+         gamma_RAS = b_Diameter_std + `b_Diameter_std:LocationRAS`, 
+         int_BD = b_Intercept, 
+         int_CL = b_Intercept + b_LocationCL, 
+         int_RAS = b_Intercept + b_LocationRAS)
+
+prop_nit %>% summarize(propBD = sum(gamma_BD>0)/length(gamma_BD), 
+                   propCL = sum(gamma_CL>0)/length(gamma_CL), 
+                   propRAS = sum(gamma_RAS>0)/length(gamma_RAS)) %>% as.data.frame()
+
+#Mean and 95% CrI slope estimates for each relationship
+prop_nit %>% mean_qi(gamma_BD)
+prop_nit %>% mean_qi(gamma_CL)
+prop_nit %>% mean_qi(gamma_RAS)
+
+#Mean and 95% CrI intercept estimates for each relationship
+prop_nit %>% mean_qi(int_BD) %>% as.data.frame()
+prop_nit %>% mean_qi(int_CL) %>% as.data.frame()
+prop_nit %>% mean_qi(int_RAS) %>% as.data.frame()
+
+### Sample from posterior ###
+#Create new data frame for sampling
+CNLayer1a %>% group_by(Location) %>% summarize(min(Diameter), max(Diameter)) %>% as.data.frame()
+
+
+newdat<-tibble(Location=c(rep("BD", 100), rep("CL", 100), rep("RAS", 100)),
+               Diameter_std=c(seq(min(filter(CNLayer1a, Location=="BD")$Diameter_std),
+                              max(filter(CNLayer1a, Location=="BD")$Diameter_std), 
+                              length.out=100),
+                          seq(min(filter(CNLayer1a, Location=="CL")$Diameter_std),
+                              max(filter(CNLayer1a, Location=="CL")$Diameter_std), 
+                              length.out=100),
+                          seq(min(filter(CNLayer1a, Location=="RAS")$Diameter_std),
+                              max(filter(CNLayer1a, Location=="RAS")$Diameter_std), 
+                              length.out=100)), 
+               FishID="new")
+
+
+#draw from posterior
+post_nit <- add_epred_draws(nit,newdata= newdat, 
+               re_formula = NA,allow_new_levels=T)
+
+#summarize by mean and credible intervals
+summ_nit<-post_nit %>% 
+  group_by(Location, Diameter_std) %>% 
+  mean_qi(.epred);summ_nit
+
+#Estimated differences from min to max eye lens diameter
+diffs <- post_nit %>% 
+  group_by(Location) %>% 
+  filter(Diameter_std==max(Diameter_std)|Diameter_std==min(Diameter_std)) %>% 
+  ungroup() %>% 
+  select(.draw, Location, Diameter_std, .epred) %>% 
+  pivot_wider(names_from = c(Location, Diameter_std), values_from=.epred) %>% 
+  mutate(BD_diff=`BD_1.17061831151115`-`BD_-1.59521138582875`,
+         Clear_diff=`CL_2.48518682931797`-`CL_-1.2571305702602`,
+         RAS_diff=`RAS_2.24075529078677`-`RAS_-1.32478496953529`)
+
+mean_qi(diffs[8:10]) 
+
+#final plot
+Nit_LM <- CNLayer1a %>% 
+  ggplot(aes(x=Diameter_std, y=d15N))+
+  geom_point(aes(group=Location, col=Location, fill=Location), alpha=0.4, size=1)+
+  geom_line(data=summ_nit, aes(x=Diameter_std, y=.epred, group=Location, linetype=Location, color=Location), linewidth=0.5)+
+  geom_ribbon(data=summ_nit, aes(x=Diameter_std, y=.epred, ymin=.lower,ymax=.upper, group=Location, linetype=Location, fill=Location), alpha=0.2)+
+  theme_classic()+
+  ylab(expression(paste(delta^{15}, "N"," (\u2030)")))+
+  xlab("Lens diameter (\u03bcm)")+
+  scale_x_continuous(limits=c(-1.7,2.75),
+                     breaks=c((1000-mean(CNLayer1a$Diameter))/sd(CNLayer1a$Diameter),
+                              (1500-mean(CNLayer1a$Diameter))/sd(CNLayer1a$Diameter),
+                              (2000-mean(CNLayer1a$Diameter))/sd(CNLayer1a$Diameter),
+                              (2500-mean(CNLayer1a$Diameter))/sd(CNLayer1a$Diameter),
+                              (3000-mean(CNLayer1a$Diameter))/sd(CNLayer1a$Diameter)), 
+                     labels=c(1000, 1500, 2000, 2500, 3000))+
+  scale_y_continuous(limits=c(0,30), breaks=seq(0,30,5))+
+  scale_color_manual(values=c("black", "orange2", "blue"), name=NULL, labels=c("Pond", "Lake", "RAS"))+
+  scale_fill_manual(values=c("black", "orange2", "blue"),name=NULL,labels=c("Pond", "Lake", "RAS"))+
+  scale_linetype_manual(values=c(2, 1,4), name=NULL, labels=c("Pond", "Lake", "RAS"))+
+  theme(axis.text = element_text(size=8), 
+        axis.title = element_text(size=10),
+        strip.background = element_blank(),
+        strip.text = element_text(size=8), 
+        legend.position = "none"); Nit_LM
+
+lm_plots<-cowplot::plot_grid(Carb_LM, Nit_LM, ncol=1, rel_heights = c(0.53, 0.47)); lm_plots
+
+ggsave("Stacked_LMs.jpeg",plot=lm_plots, width=80, height=160,units = "mm",dpi = 800)
