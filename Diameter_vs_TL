@@ -1,0 +1,13 @@
+diam <- read_excel('Walleye Length Weight.xlsx")
+
+diam %>% 
+  ggplot(aes(x=`Length(mm)`, y=LensDiameter))+
+  geom_point()+
+  geom_smooth(col="black", method="lm")+
+  theme_classic()+
+  scale_x_continuous(limits = c(120,230))+
+  scale_y_continuous(limits = c(1700, 3000),breaks=seq(1800,3000,200))+
+  xlab("Total length (mm)")+
+  ylab("Lens diameter (\u03bcm)")+
+  theme(axis.title = element_text(size=18),
+        axis.text = element_text(size=12))
